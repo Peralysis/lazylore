@@ -528,10 +528,11 @@ fn render_main(frame: &mut Frame, area: Rect, app: &App) {
             .unwrap_or_else(|_| Text::raw(&app.banner))
             .lines;
         // Drop trailing blank lines emitted by tui-banner so the copyright sits close.
-        while v
-            .last()
-            .is_some_and(|l| l.spans.iter().all(|s| s.content.chars().all(char::is_whitespace)))
-        {
+        while v.last().is_some_and(|l| {
+            l.spans
+                .iter()
+                .all(|s| s.content.chars().all(char::is_whitespace))
+        }) {
             v.pop();
         }
         // One blank line of top margin before the banner.
