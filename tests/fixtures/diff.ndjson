@@ -1,0 +1,3 @@
+{"tagName":"fileDiff","data":{"path":"src/main.rs","patch":"--- a/src/main.rs\n+++ b/src/main.rs\n@@ -1 +1 @@\n-old\n+new","action":"modify"}}
+{"tagName":"complete","data":{"status":0,"error":{}}}
+

@@ -1,0 +1,6 @@
+{"tagName":"branchListBegin","data":{}}
+{"tagName":"branchListEntry","data":{"location":"local","id":"b1","name":"main","category":"","latest":"11111111","stack":[],"creator":"user","created":0,"isCurrent":true,"archived":false}}
+{"tagName":"branchListEntry","data":{"location":"remote","id":"b2","name":"feature","category":"","latest":"22222222","stack":[],"creator":"user","created":0,"isCurrent":false,"archived":false}}
+{"tagName":"branchListEnd","data":{}}
+{"tagName":"complete","data":{"status":0,"error":{}}}
+

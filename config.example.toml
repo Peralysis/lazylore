@@ -1,0 +1,30 @@
+[general]
+lore_binary = "lore"
+refresh_interval_ms = 2000
+watch_files = true
+scan_on_start = false
+history_page_size = 100
+confirm_destructive = true
+
+[ui]
+mouse = true
+file_tree = true
+theme = "default"
+
+[tools]
+# editor = "code"
+# opener = ""
+# diff_tool = ""
+
+# Action names can be rebound without changing the remaining defaults.
+[keybindings]
+# quit = "ctrl+q"
+# command_palette = "ctrl+p"
+# pane_next = "tab"
+# pane_previous = "shift+tab"
+# diff_mode = "ctrl+tab"
+# file_stage = "space"
+# file_commit = "c"
+# branch_switch = "space"
+# revision_revert = "t"
+

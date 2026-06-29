@@ -1,0 +1,106 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test --all-targets
+
+  build:
+    needs: test
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            artifact_name: linux-x86_64
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-musl
+            artifact_name: linux-aarch64
+          - os: macos-13
+            target: x86_64-apple-darwin
+            artifact_name: macos-x86_64
+          - os: macos-14
+            target: aarch64-apple-darwin
+            artifact_name: macos-aarch64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_name: windows-x86_64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package
+        shell: bash
+        run: |
+          mkdir -p dist
+
+          if [[ "${{ matrix.target }}" == *"windows"* ]]; then
+            cp "target/${{ matrix.target }}/release/${BINARY_NAME}.exe" "dist/${BINARY_NAME}.exe"
+            7z a "${BINARY_NAME}-${{ matrix.artifact_name }}.zip" ./dist/*
+          else
+            cp "target/${{ matrix.target }}/release/${BINARY_NAME}" "dist/${BINARY_NAME}"
+            tar -czf "${BINARY_NAME}-${{ matrix.artifact_name }}.tar.gz" -C dist "${BINARY_NAME}"
+          fi
+      
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: |
+            *.tar.gz
+            *.zip
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+
+    # Only create a GitHub release for tags, not for normal pushes or PRs
+    if: github.ref_type == 'tag'
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: List Release Assets
+        run: ls -la release-assets
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: release-assets/*
+          generate_release_notes: true
