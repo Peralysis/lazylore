@@ -59,6 +59,8 @@ jobs:
 
       - name: Package
         shell: bash
+        env:
+          BINARY_NAME: lazylore
         run: |
           mkdir -p dist
 
