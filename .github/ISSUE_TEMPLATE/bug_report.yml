@@ -1,0 +1,74 @@
+name: Bug report
+description: Report a problem with LazyLore.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for taking the time to report a bug!
+
+        > [!IMPORTANT]
+        > If you believe you have found a **security vulnerability**, please read [SECURITY.md](https://github.com/Peralysis/lazylore/blob/main/.github/SECURITY.md) instead of filing a public issue.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug you encountered.
+      placeholder: Describe what went wrong.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Step-by-step instructions to reproduce the bug.
+      placeholder: |
+        1. Open LazyLore in a Lore repository.
+        2. Press ...
+        3. See error.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen?
+
+  - type: input
+    id: lazylore-version
+    attributes:
+      label: LazyLore version or commit
+      description: Output of `lazylore --version` or the commit hash you built from.
+      placeholder: "0.1.0 or abc1234"
+    validations:
+      required: true
+
+  - type: input
+    id: lore-version
+    attributes:
+      label: Lore CLI version
+      description: Output of `lore --version`.
+      placeholder: "0.8.4"
+    validations:
+      required: true
+
+  - type: input
+    id: os-terminal
+    attributes:
+      label: OS and terminal emulator
+      description: Operating system (including version) and the terminal you are using.
+      placeholder: "Windows 11, Windows Terminal 1.20"
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs or command history
+      description: |
+        Press `@` in LazyLore to open the command log, or paste any relevant terminal output here.
+        Wrap in code fences if pasting raw text.
+      render: text

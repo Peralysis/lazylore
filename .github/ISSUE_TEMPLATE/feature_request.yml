@@ -1,0 +1,38 @@
+name: Feature request
+description: Suggest a new feature or improvement for LazyLore.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before submitting, consider whether the feature requires Lore CLI support that does not yet exist.
+        LazyLore intentionally omits lazygit controls (stash, rebase, tags, worktrees, line-level staging) where Lore has no equivalent operation.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or motivation
+      description: What problem does this feature solve, or what workflow does it improve?
+      placeholder: "When I try to ... I have to ... which is inconvenient because ..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: Describe the feature you would like. Include suggested keybindings if applicable (LazyLore follows lazygit conventions where Lore has an equivalent operation).
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Any other approaches you considered or workarounds you are currently using.
+
+  - type: textarea
+    id: lore-parity
+    attributes:
+      label: Lore CLI parity context
+      description: |
+        If this feature depends on a specific `lore` subcommand or `--json` event, note it here.
+        If this is a lazygit feature that Lore does not currently support, mention that too — it helps scope the work.

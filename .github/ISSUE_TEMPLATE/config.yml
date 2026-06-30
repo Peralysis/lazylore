@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+
+contact_links:
+  - name: Lore CLI bug or question
+    url: https://github.com/EpicGames/lore/issues
+    about: >
+      If the underlying `lore` command is behaving incorrectly,
+      please report it to the Lore project directly.
