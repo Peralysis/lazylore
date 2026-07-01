@@ -115,3 +115,17 @@ jobs:
         with:
           files: release-assets/*
           generate_release_notes: true
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+
+    # Only publish to crates.io for tags, not for normal pushes or PRs
+    if: github.ref_type == 'tag'
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Publish to crates.io
+        run: cargo publish --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
