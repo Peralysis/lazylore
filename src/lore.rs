@@ -468,8 +468,20 @@ mod tests {
         // builder, so covering one is representative of all of them.
         for args in [
             vec!["history".to_string(), "100".to_string()],
-            vec!["revision".to_string(), "info".to_string(), "abc123".to_string(), "--delta".to_string()],
-            vec!["diff".to_string(), "--source".into(), "a".into(), "--target".into(), "b".into(), "file.txt".into()],
+            vec![
+                "revision".to_string(),
+                "info".to_string(),
+                "abc123".to_string(),
+                "--delta".to_string(),
+            ],
+            vec![
+                "diff".to_string(),
+                "--source".into(),
+                "a".into(),
+                "--target".into(),
+                "b".into(),
+                "file.txt".into(),
+            ],
         ] {
             let debug_without = format!("{:?}", client.command(&args));
             assert!(

@@ -685,7 +685,10 @@ impl App {
             } else {
                 let patches = diff_preview_lines(&output.events);
                 if patches.is_empty() {
-                    vec![header, "No text patch available. This may be binary content.".into()]
+                    vec![
+                        header,
+                        "No text patch available. This may be binary content.".into(),
+                    ]
                 } else {
                     patches
                 }
