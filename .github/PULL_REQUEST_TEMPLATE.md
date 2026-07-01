@@ -11,6 +11,7 @@ Closes #
 - [ ] Refactor / cleanup
 - [ ] Documentation
 - [ ] CI / tooling
+- [ ] CVE/GHSA/Security
 
 ## Verification checklist
 
