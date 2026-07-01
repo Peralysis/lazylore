@@ -98,9 +98,43 @@ async fn main() -> Result<()> {
     let backend = CrosstermBackend::new(stdout());
     let mut terminal = Terminal::new(backend)?;
     terminal.clear()?;
+    show_loading_screen(&mut terminal, &mut app).await?;
     let result = run(&mut terminal, &mut app).await;
     terminal.show_cursor()?;
     result
+}
+
+/// Draw an animated loading screen while `App::load_initial` performs the
+/// first, potentially slow, server-touching refresh. Without this the
+/// terminal would sit blank until `lore status` returns or times out (default
+/// 3s) when the Lore server is unreachable.
+async fn show_loading_screen(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    app: &mut App,
+) -> Result<()> {
+    let banner = app.banner.clone();
+    let offline_after = app.config.command_timeout();
+    let start = tokio::time::Instant::now();
+
+    let load = app.load_initial();
+    tokio::pin!(load);
+
+    let mut spinner = tokio::time::interval(std::time::Duration::from_millis(120));
+    let mut frame_idx = 0usize;
+    // Draw one frame immediately so there's instant feedback, before the
+    // first spinner tick fires.
+    terminal.draw(|frame| ui::render_loading(frame, &banner, frame_idx, false))?;
+    loop {
+        tokio::select! {
+            _ = &mut load => break,
+            _ = spinner.tick() => {
+                frame_idx += 1;
+                let show_offline_hint = start.elapsed() >= offline_after;
+                terminal.draw(|frame| ui::render_loading(frame, &banner, frame_idx, show_offline_hint))?;
+            }
+        }
+    }
+    Ok(())
 }
 
 async fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> Result<()> {

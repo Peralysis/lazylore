@@ -270,8 +270,14 @@ impl App {
         };
         app.state.repository.root = repository;
         app.state.repository.stale = true;
-        app.refresh_all(app.config.general.scan_on_start).await;
         Ok(app)
+    }
+
+    /// Run the initial server-touching refresh. Split out of `new` so the
+    /// terminal can show a loading screen while this (potentially slow) work
+    /// runs, instead of blocking before the UI ever renders.
+    pub async fn load_initial(&mut self) {
+        self.refresh_all(self.config.general.scan_on_start).await;
     }
 
     pub fn stream_receiver(&mut self) -> &mut mpsc::UnboundedReceiver<StreamMessage> {
