@@ -1,5 +1,9 @@
 # LazyLore
 
+[![CI](https://github.com/Peralysis/lazylore/actions/workflows/ci.yml/badge.svg)](https://github.com/Peralysis/lazylore/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/Peralysis/lazylore)](https://github.com/Peralysis/lazylore/releases)
+[![License](https://img.shields.io/github/license/Peralysis/lazylore)](LICENSE)
+
 LazyLore is a cross-platform terminal UI for [Epic's Lore version control system](https://github.com/EpicGames/lore). It follows the pane layout and keyboard conventions of lazygit where Lore has an equivalent operation, while exposing Lore-native features such as file locks, links, layers, repository verification, and shared stores.
 
 > [!IMPORTANT]
