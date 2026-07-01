@@ -48,6 +48,7 @@ Run it from a Lore working copy or pass a path:
 lazylore
 lazylore /path/to/repository
 lazylore --scan
+lazylore --offline
 lazylore --lore-binary /custom/path/to/lore
 ```
 
@@ -59,7 +60,7 @@ Outside a usable repository, LazyLore opens an onboarding screen. Press `Ctrl+P`
 |---|---|
 | Global | `Tab`/`Right` next pane, `Left`/`Shift+Tab` previous pane, `1–5`/`0` direct focus |
 | Global | `j/k` or `Up/Down` move within a pane, `q` quit |
-| Global | `p` sync, `P` push, `R` tracked-state refresh, `?` help, `@` command log (`;`/`.` page, `Esc` back) |
+| Global | `p` sync, `P` push, `R` tracked-state refresh, `O` toggle offline mode, `?` help, `@` command log (`;`/`.` page, `Esc` back) |
 | Global | `Ctrl+P` Lore command browser, `:` shell command |
 | Files | `Space` stage/unstage, `a` stage all, `c` commit, `A` amend, `d` discard, `r` full scan, `e` edit, `o` open, `Enter` view diff |
 | Branches | `Space` switch, `n` create, `d` archive, `M` merge, `g` reset, `Enter` history, `[`/`]` Local/Remote tabs |
@@ -79,6 +80,14 @@ Lore normally reports only files already marked dirty; it does not walk a potent
 3. `[unscanned]` remains visible until `r` performs `lore status --scan`.
 
 Use `--scan` or `general.scan_on_start = true` when correctness at startup is more important than scan cost.
+
+## Offline mode
+
+When the Lore server is unreachable, LazyLore automatically falls back to offline mode: sync, push, and lock commands are disabled while last-known local data stays visible, and LazyLore periodically re-probes the server in the background.
+
+- `O` toggles forced-offline mode at any time, suppressing those background probes.
+- `--offline` starts LazyLore already in forced-offline mode (equivalent to `general.offline = true` in `config.toml`).
+- Re-press `O` (or restart without `--offline`) to re-probe and go back online.
 
 ## Configuration
 
