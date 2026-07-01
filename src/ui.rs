@@ -80,6 +80,53 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     }
 }
 
+const SPINNER_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+/// Standalone loading screen shown while the app performs its initial,
+/// potentially slow, server-touching refresh. Deliberately takes no `&App` so
+/// it can be redrawn on a timer while `app` is mutably borrowed elsewhere.
+pub fn render_loading(frame: &mut Frame, banner: &str, frame_idx: usize, show_offline_hint: bool) {
+    let area = frame.area();
+    let mut lines: Vec<Line> = banner
+        .as_bytes()
+        .into_text()
+        .unwrap_or_else(|_| Text::raw(banner))
+        .lines;
+    // Drop trailing blank lines emitted by tui-banner so the spinner sits close.
+    while lines.last().is_some_and(|l| {
+        l.spans
+            .iter()
+            .all(|s| s.content.chars().all(char::is_whitespace))
+    }) {
+        lines.pop();
+    }
+    lines.push(Line::from(""));
+    let spinner = SPINNER_FRAMES[frame_idx % SPINNER_FRAMES.len()];
+    lines.push(Line::from(Span::styled(
+        format!("{spinner}  Connecting to Lore…"),
+        Style::default().fg(ACTIVE).add_modifier(Modifier::BOLD),
+    )));
+    if show_offline_hint {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "Server slow to respond — starting in offline mode…",
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+    let rect = centered(area, 64, 60);
+    frame.render_widget(Clear, rect);
+    frame.render_widget(
+        Paragraph::new(lines).alignment(Alignment::Center).block(
+            Block::default()
+                .title(" LazyLore ")
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(ACTIVE)),
+        ),
+        rect,
+    );
+}
+
 fn render_header(frame: &mut Frame, area: Rect, app: &App) {
     let repo = &app.state.repository;
     let (glyph, _) = match (repo.local_ahead, repo.remote_ahead) {
