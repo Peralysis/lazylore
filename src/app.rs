@@ -219,6 +219,7 @@ impl App {
             None
         };
         let offline_forced = config.general.offline;
+        lore.set_offline(offline_forced);
         let mut app = Self {
             state: AppState::default(),
             focus: Focus::Files,
@@ -317,6 +318,11 @@ impl App {
         if !self.is_offline() {
             return true;
         }
+        if !self.offline_forced {
+            // Give Lore a genuine chance to reach the server instead of
+            // short-circuiting on our own cached offline flag.
+            self.lore.set_offline(false);
+        }
         self.refresh_status(false).await;
         !self.is_offline()
     }
@@ -336,6 +342,9 @@ impl App {
             return;
         }
         self.last_reconnect_probe = Some(Instant::now());
+        // Force a real network attempt rather than trusting the cached
+        // offline flag, otherwise we'd never notice the server came back.
+        self.lore.set_offline(false);
         self.refresh_status(false).await;
         if !self.is_offline() {
             // We just came back online — repopulate server-dependent data.
@@ -372,11 +381,16 @@ impl App {
                     // A timeout means the server is unreachable, not that the
                     // repository is broken. Keep last-known file state intact.
                     self.state.repository.remote_available = false;
+                    // From here on, skip Lore's own network round-trip until
+                    // we deliberately probe again — otherwise every refresh
+                    // (including watcher-driven ones) pays the same timeout.
+                    self.lore.set_offline(self.is_offline());
                     return;
                 }
                 if !output.record.success {
                     self.state.repository_error =
                         Some(command_error(&output.events, &output.record.stderr));
+                    self.lore.set_offline(self.is_offline());
                     return;
                 }
                 self.state.repository_error = None;
@@ -434,6 +448,7 @@ impl App {
                 if scan {
                     self.state.repository.stale = false;
                 }
+                self.lore.set_offline(self.is_offline());
             }
             Err(error) => self.state.repository_error = Some(error.to_string()),
         }
@@ -656,14 +671,24 @@ impl App {
         args.push(file_path.clone());
         if let Ok(output) = self.lore.capture(CommandRequest::read(args)).await {
             self.push_record(output.record.clone());
-            let patches = diff_preview_lines(&output.events);
-            self.state.preview = if patches.is_empty() {
+            let header = format!("{file_action} {file_path} ({file_size} bytes)");
+            self.state.preview = if output.timed_out {
+                vec![header, "Diff timed out.".into()]
+            } else if !output.record.success {
                 vec![
-                    format!("{file_action} {file_path} ({file_size} bytes)"),
-                    "No text patch available. This may be binary content.".into(),
+                    header,
+                    format!(
+                        "Diff unavailable: {}",
+                        command_error(&output.events, &output.record.stderr)
+                    ),
                 ]
             } else {
-                patches
+                let patches = diff_preview_lines(&output.events);
+                if patches.is_empty() {
+                    vec![header, "No text patch available. This may be binary content.".into()]
+                } else {
+                    patches
+                }
             };
         }
     }
@@ -977,8 +1002,11 @@ impl App {
             KeyCode::Char('R') => self.refresh_all(false).await,
             KeyCode::Char('O') => {
                 self.offline_forced = !self.offline_forced;
-                if !self.offline_forced {
+                if self.offline_forced {
+                    self.lore.set_offline(true);
+                } else {
                     // Re-probe immediately after disabling forced-offline.
+                    self.lore.set_offline(false);
                     self.refresh_status(false).await;
                     if !self.is_offline() {
                         self.refresh_branches().await;
@@ -1971,9 +1999,22 @@ impl App {
             path,
         ];
         if let Ok(output) = self.lore.capture(CommandRequest::read(args)).await {
-            self.push_record(output.record);
-            let patches = diff_preview_lines(&output.events);
-            self.state.preview = patches;
+            self.push_record(output.record.clone());
+            self.state.preview = if output.timed_out {
+                vec!["Diff timed out.".into()]
+            } else if !output.record.success {
+                vec![format!(
+                    "Diff unavailable: {}",
+                    command_error(&output.events, &output.record.stderr)
+                )]
+            } else {
+                let patches = diff_preview_lines(&output.events);
+                if patches.is_empty() {
+                    vec!["No text patch available. This may be binary content.".into()]
+                } else {
+                    patches
+                }
+            };
         }
     }
 

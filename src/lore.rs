@@ -1,7 +1,10 @@
 use std::{
     path::{Path, PathBuf},
     process::Stdio,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -76,6 +79,11 @@ pub struct LoreClient {
     mutation_lock: Arc<Mutex<()>>,
     cancel_tx: broadcast::Sender<()>,
     command_timeout: Duration,
+    /// Shared across all clones. When set, every invocation of the `lore`
+    /// binary gets `--offline`, which tells Lore to skip its own network
+    /// round-trip instead of blocking until it times out server-side. The
+    /// caller (`App`) keeps this in sync with its known connectivity state.
+    offline: Arc<AtomicBool>,
 }
 
 #[derive(Deserialize)]
@@ -95,6 +103,7 @@ impl LoreClient {
             mutation_lock: Arc::new(Mutex::new(())),
             cancel_tx,
             command_timeout: Duration::from_secs(30),
+            offline: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -103,6 +112,13 @@ impl LoreClient {
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.command_timeout = timeout;
         self
+    }
+
+    /// Update whether subsequent commands should pass `--offline` to Lore.
+    /// Shared across all clones of this client, so a single call affects
+    /// every in-flight and future invocation (status, diff, dirty, ...).
+    pub fn set_offline(&self, offline: bool) {
+        self.offline.store(offline, Ordering::Relaxed);
     }
 
     pub fn repository(&self) -> &Path {
@@ -153,8 +169,13 @@ impl LoreClient {
     fn command(&self, args: &[String]) -> Command {
         let mut command = Command::new(&self.binary);
         command
+            .current_dir(&self.repository)
             .args(["--json", "--no-pager", "--non-interactive", "--repository"])
-            .arg(&self.repository)
+            .arg(&self.repository);
+        if self.offline.load(Ordering::Relaxed) {
+            command.arg("--offline");
+        }
+        command
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -437,6 +458,32 @@ mod tests {
                 .map(|line| parse_event_line(line).unwrap())
                 .collect();
             assert!(events.iter().any(|event| event.tag == "complete"));
+        }
+    }
+
+    #[test]
+    fn appends_offline_flag_to_every_command_once_set() {
+        let client = LoreClient::new("lore", ".");
+        // Every command the Revisions pane issues goes through this same
+        // builder, so covering one is representative of all of them.
+        for args in [
+            vec!["history".to_string(), "100".to_string()],
+            vec!["revision".to_string(), "info".to_string(), "abc123".to_string(), "--delta".to_string()],
+            vec!["diff".to_string(), "--source".into(), "a".into(), "--target".into(), "b".into(), "file.txt".into()],
+        ] {
+            let debug_without = format!("{:?}", client.command(&args));
+            assert!(
+                !debug_without.contains("--offline"),
+                "did not expect --offline while online: {debug_without}"
+            );
+
+            client.set_offline(true);
+            let debug_with = format!("{:?}", client.command(&args));
+            assert!(
+                debug_with.contains("--offline"),
+                "expected --offline once set: {debug_with}"
+            );
+            client.set_offline(false);
         }
     }
 }
