@@ -252,23 +252,22 @@ pub fn merge_runtime_manifest(baseline: Vec<CommandSpec>, markdown: &str) -> Vec
                     requires_network: false,
                 });
         } else if line.starts_with("**Usage:**") {
-            if let Some(path) = current.as_ref() {
-                if let Some(spec) = commands.get_mut(path) {
-                    spec.usage = line
-                        .replace("**Usage:**", "")
-                        .replace('`', "")
-                        .trim()
-                        .into();
-                }
+            if let Some(path) = current.as_ref()
+                && let Some(spec) = commands.get_mut(path)
+            {
+                spec.usage = line
+                    .replace("**Usage:**", "")
+                    .replace('`', "")
+                    .trim()
+                    .into();
             }
         } else if !line.trim().is_empty() && current.is_some() && !line.starts_with('#') {
             let path = current.as_ref().expect("checked");
-            if let Some(spec) = commands.get_mut(path) {
-                if spec.description == "Lore command"
-                    || spec.description.starts_with("Command discovered")
-                {
-                    spec.description = line.trim().into();
-                }
+            if let Some(spec) = commands.get_mut(path)
+                && (spec.description == "Lore command"
+                    || spec.description.starts_with("Command discovered"))
+            {
+                spec.description = line.trim().into();
             }
             current = None;
         }

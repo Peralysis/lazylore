@@ -547,10 +547,10 @@ impl App {
             } else if event.tag == "revisionHistoryEntry" {
                 // Metadata arrives after its entry; flush the pending message into the
                 // previous revision before pushing the new one.
-                if let Some(prev) = revisions.last_mut() {
-                    if prev.message.is_empty() {
-                        prev.message = std::mem::take(&mut last_message);
-                    }
+                if let Some(prev) = revisions.last_mut()
+                    && prev.message.is_empty()
+                {
+                    prev.message = std::mem::take(&mut last_message);
                 }
                 last_message.clear();
                 let parents = event
@@ -579,10 +579,10 @@ impl App {
             }
         }
         // Flush trailing metadata for the last revision
-        if let Some(last) = revisions.last_mut() {
-            if last.message.is_empty() {
-                last.message = last_message;
-            }
+        if let Some(last) = revisions.last_mut()
+            && last.message.is_empty()
+        {
+            last.message = last_message;
         }
         self.state.revisions = revisions;
         self.revision_selected =
@@ -870,10 +870,10 @@ impl App {
     fn remap_key(&self, key: KeyEvent) -> KeyEvent {
         let actions = action_keys(self.focus);
         for (action, default_code, default_modifiers) in &actions {
-            if let Some(binding) = self.config.keybindings.get(*action) {
-                if binding_matches(binding, key) {
-                    return KeyEvent::new(*default_code, *default_modifiers);
-                }
+            if let Some(binding) = self.config.keybindings.get(*action)
+                && binding_matches(binding, key)
+            {
+                return KeyEvent::new(*default_code, *default_modifiers);
             }
         }
         for (action, default_code, default_modifiers) in actions {

@@ -147,9 +147,8 @@ async fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut Ap
         }
         tokio::select! {
             event = events.next() => {
-                if let Some(Ok(Event::Key(key))) = event {
-                    if key.kind == KeyEventKind::Press { app.on_key(key).await; }
-                }
+                if let Some(Ok(Event::Key(key))) = event
+                    && key.kind == KeyEventKind::Press { app.on_key(key).await; }
             }
             message = app.stream_receiver().recv() => {
                 if let Some(message) = message {
