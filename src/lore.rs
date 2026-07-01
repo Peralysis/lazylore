@@ -20,6 +20,7 @@ use tokio::{
 };
 
 use crate::{
+    cache::RevisionCache,
     manifest::redact,
     model::{CommandRecord, LoreEvent},
 };
@@ -36,6 +37,11 @@ pub enum CommandClass {
 pub struct CommandRequest {
     pub args: Vec<String>,
     pub class: CommandClass,
+    /// `true` only for reads whose output is fully determined by immutable,
+    /// content-addressed inputs (revision hashes) and therefore safe to
+    /// memoize. Set via `CommandRequest::cached_read`; never set by `read` or
+    /// `mutate`.
+    pub cacheable: bool,
 }
 
 impl CommandRequest {
@@ -43,6 +49,19 @@ impl CommandRequest {
         Self {
             args: args.into_iter().map(Into::into).collect(),
             class: CommandClass::Read,
+            cacheable: false,
+        }
+    }
+
+    /// Like `read`, but marks the request as safe to serve from
+    /// `RevisionCache`. Only use this when every argument that affects the
+    /// output is an immutable revision hash (or a path scoped to one), e.g.
+    /// `revision info <hash> --delta` or `diff --source <hash> --target
+    /// <hash> <path>`.
+    pub fn cached_read(args: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        Self {
+            cacheable: true,
+            ..Self::read(args)
         }
     }
 
@@ -50,6 +69,7 @@ impl CommandRequest {
         Self {
             args: args.into_iter().map(Into::into).collect(),
             class: CommandClass::Mutating,
+            cacheable: false,
         }
     }
 }
@@ -84,6 +104,10 @@ pub struct LoreClient {
     /// round-trip instead of blocking until it times out server-side. The
     /// caller (`App`) keeps this in sync with its known connectivity state.
     offline: Arc<AtomicBool>,
+    /// Memoizes `CommandRequest::cached_read` results. A no-op handle
+    /// (`RevisionCache::disabled()`) by default; `App::new` attaches a real
+    /// one when caching is enabled in config.
+    cache: RevisionCache,
 }
 
 #[derive(Deserialize)]
@@ -104,7 +128,15 @@ impl LoreClient {
             cancel_tx,
             command_timeout: Duration::from_secs(30),
             offline: Arc::new(AtomicBool::new(false)),
+            cache: RevisionCache::disabled(),
         }
+    }
+
+    /// Attach a cache for `CommandRequest::cached_read` requests. Shared
+    /// across all clones of this client.
+    pub fn with_cache(mut self, cache: RevisionCache) -> Self {
+        self.cache = cache;
+        self
     }
 
     /// Override the per-command timeout. Use `Config::command_timeout()` to
@@ -184,6 +216,31 @@ impl LoreClient {
     }
 
     pub async fn capture(&self, request: CommandRequest) -> Result<CommandOutput> {
+        // Content-addressed reads can be served from the cache without ever
+        // spawning `lore`. Only requests explicitly marked `cacheable` by the
+        // caller (see `CommandRequest::cached_read`) are looked up here.
+        let cache_key = request
+            .cacheable
+            .then(|| RevisionCache::key(&self.repository, &request.args));
+        if let Some(key) = cache_key {
+            if let Some(events) = self.cache.get(key).await {
+                let redacted = redact(&request.args);
+                let display = display_command(&redacted);
+                return Ok(CommandOutput {
+                    events: (*events).clone(),
+                    timed_out: false,
+                    record: CommandRecord {
+                        argv: redacted,
+                        display,
+                        success: true,
+                        status: Some(0),
+                        duration: Duration::ZERO,
+                        stderr: String::new(),
+                    },
+                });
+            }
+        }
+
         let _guard = if request.class == CommandClass::Mutating {
             Some(self.mutation_lock.lock().await)
         } else {
@@ -204,6 +261,13 @@ impl LoreClient {
                 let status = output.status.code();
                 let event_failure = completion_failed(&events);
                 let success = output.status.success() && !event_failure;
+                // Never cache failures, timeouts (handled below), or empty
+                // results, so offline/partial output can't poison the cache.
+                if let Some(key) = cache_key {
+                    if success && !events.is_empty() {
+                        self.cache.put(key, &events).await;
+                    }
+                }
                 Ok(CommandOutput {
                     events,
                     timed_out: false,
@@ -497,5 +561,81 @@ mod tests {
             );
             client.set_offline(false);
         }
+    }
+
+    #[tokio::test]
+    async fn cached_read_short_circuits_without_spawning_process() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = RevisionCache::new(
+            Some(dir.path().to_path_buf()),
+            Duration::from_secs(60),
+            1024 * 1024,
+            8,
+        );
+        let repository = PathBuf::from("/repo");
+        let args = vec![
+            "revision".to_string(),
+            "info".to_string(),
+            "abc123".to_string(),
+            "--delta".to_string(),
+        ];
+        let key = RevisionCache::key(&repository, &args);
+        cache
+            .put(
+                key,
+                &[LoreEvent {
+                    tag: "revisionInfo".into(),
+                    data: serde_json::json!({}),
+                }],
+            )
+            .await;
+
+        // A binary that does not exist: if `capture` tried to spawn it, this
+        // would return an error. A cache hit must return `Ok` without ever
+        // reaching `Command::spawn`.
+        let client =
+            LoreClient::new("definitely-not-a-real-lore-binary", repository).with_cache(cache);
+        let output = client
+            .capture(CommandRequest::cached_read(args))
+            .await
+            .expect("cache hit should not require spawning a process");
+        assert_eq!(output.events.len(), 1);
+        assert_eq!(output.events[0].tag, "revisionInfo");
+    }
+
+    #[tokio::test]
+    async fn non_cacheable_read_still_attempts_to_spawn() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = RevisionCache::new(
+            Some(dir.path().to_path_buf()),
+            Duration::from_secs(60),
+            1024 * 1024,
+            8,
+        );
+        let repository = PathBuf::from("/repo");
+        let args = vec![
+            "revision".to_string(),
+            "info".to_string(),
+            "abc123".to_string(),
+            "--delta".to_string(),
+        ];
+        let key = RevisionCache::key(&repository, &args);
+        cache
+            .put(
+                key,
+                &[LoreEvent {
+                    tag: "revisionInfo".into(),
+                    data: serde_json::json!({}),
+                }],
+            )
+            .await;
+
+        let client =
+            LoreClient::new("definitely-not-a-real-lore-binary", repository).with_cache(cache);
+        let result = client.capture(CommandRequest::read(args)).await;
+        assert!(
+            result.is_err(),
+            "a plain `read` request must not be served from the cache"
+        );
     }
 }

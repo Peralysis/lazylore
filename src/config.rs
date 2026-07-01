@@ -16,6 +16,7 @@ pub struct Config {
     pub general: GeneralConfig,
     pub ui: UiConfig,
     pub tools: ToolConfig,
+    pub cache: CacheConfig,
     pub keybindings: BTreeMap<String, String>,
 }
 
@@ -55,6 +56,44 @@ pub struct ToolConfig {
     pub diff_tool: Option<String>,
 }
 
+/// Controls the on-disk and in-memory cache for content-addressed Lore reads
+/// (revision deltas and revision-to-revision diffs). Working-tree state,
+/// status, history, branches, and locks are never cached regardless of this
+/// setting.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CacheConfig {
+    pub enabled: bool,
+    /// How long a cached entry stays valid, in either tier.
+    pub ttl_secs: u64,
+    /// Soft cap on total filesystem cache size; oldest entries are evicted
+    /// first once exceeded.
+    pub max_disk_mb: u64,
+    /// Maximum number of entries held in the in-memory tier.
+    pub max_memory_entries: usize,
+}
+
+impl Default for CacheConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            ttl_secs: 7 * 24 * 60 * 60,
+            max_disk_mb: 128,
+            max_memory_entries: 256,
+        }
+    }
+}
+
+impl CacheConfig {
+    pub fn ttl(&self) -> Duration {
+        Duration::from_secs(self.ttl_secs)
+    }
+
+    pub fn max_disk_bytes(&self) -> u64 {
+        self.max_disk_mb.saturating_mul(1024 * 1024)
+    }
+}
+
 impl Default for GeneralConfig {
     fn default() -> Self {
         Self {
@@ -85,6 +124,14 @@ impl Config {
     pub fn default_path() -> Option<PathBuf> {
         ProjectDirs::from("dev", "lazylore", "lazylore")
             .map(|dirs| dirs.config_dir().join("config.toml"))
+    }
+
+    /// Platform-native cache directory (e.g. `%LOCALAPPDATA%\lazylore\lazylore\cache`
+    /// on Windows, `~/.cache/lazylore` on Linux). `None` when it cannot be
+    /// resolved, in which case the filesystem cache tier is disabled and
+    /// caching falls back to memory-only.
+    pub fn cache_dir() -> Option<PathBuf> {
+        ProjectDirs::from("dev", "lazylore", "lazylore").map(|dirs| dirs.cache_dir().to_path_buf())
     }
 
     pub fn load(path: Option<&Path>) -> Result<Self> {

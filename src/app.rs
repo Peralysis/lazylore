@@ -9,6 +9,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use tokio::{process::Command, sync::mpsc};
 
 use crate::{
+    cache::RevisionCache,
     config::Config,
     lore::{CommandClass, CommandRequest, LoreClient, StreamMessage, event_error, event_summary},
     manifest::{CommandSpec, Safety, baseline_commands, merge_runtime_manifest, split_arguments},
@@ -204,8 +205,26 @@ impl App {
     }
 
     pub async fn new(repository: PathBuf, config: Config) -> Result<Self> {
+        let cache = if config.cache.enabled {
+            let dir = Config::cache_dir().map(|base| crate::cache::scope_dir(&base, &repository));
+            RevisionCache::new(
+                dir,
+                config.cache.ttl(),
+                config.cache.max_disk_bytes(),
+                config.cache.max_memory_entries,
+            )
+        } else {
+            RevisionCache::disabled()
+        };
+        // Prune once at startup so expired/over-budget entries from previous
+        // sessions don't accumulate forever. Spawned so it never delays launch.
+        tokio::spawn({
+            let cache = cache.clone();
+            async move { cache.prune().await }
+        });
         let lore = LoreClient::new(config.general.lore_binary.clone(), &repository)
-            .with_timeout(config.command_timeout());
+            .with_timeout(config.command_timeout())
+            .with_cache(cache);
         let version = lore.validate().await?;
         let commands = match lore.markdown_help().await {
             Ok(markdown) => merge_runtime_manifest(baseline_commands(), &markdown),
@@ -295,6 +314,7 @@ impl App {
                 .capture(CommandRequest {
                     args,
                     class: CommandClass::Mutating,
+                    cacheable: false,
                 })
                 .await
             {
@@ -621,7 +641,8 @@ impl App {
                         revision.hash.clone(),
                         "--delta".into(),
                     ];
-                    if let Ok(output) = self.lore.capture(CommandRequest::read(args)).await {
+                    // Keyed on an immutable revision hash: safe to memoize.
+                    if let Ok(output) = self.lore.capture(CommandRequest::cached_read(args)).await {
                         self.push_record(output.record);
                         self.state.preview = build_revision_readout(&output.events);
                     }
@@ -1482,7 +1503,11 @@ impl App {
         } else {
             CommandClass::Mutating
         };
-        self.start(CommandRequest { args, class });
+        self.start(CommandRequest {
+            args,
+            class,
+            cacheable: false,
+        });
     }
 
     async fn run_shell(&mut self, source: &str) {
@@ -1927,7 +1952,8 @@ impl App {
             hash.clone(),
             "--delta".into(),
         ];
-        let Ok(output) = self.lore.capture(CommandRequest::read(args)).await else {
+        // Keyed on an immutable revision hash: safe to memoize.
+        let Ok(output) = self.lore.capture(CommandRequest::cached_read(args)).await else {
             return;
         };
         self.push_record(output.record);
@@ -2001,7 +2027,8 @@ impl App {
             hash,
             path,
         ];
-        if let Ok(output) = self.lore.capture(CommandRequest::read(args)).await {
+        // Both endpoints are immutable revision hashes: safe to memoize.
+        if let Ok(output) = self.lore.capture(CommandRequest::cached_read(args)).await {
             self.push_record(output.record.clone());
             self.state.preview = if output.timed_out {
                 vec!["Diff timed out.".into()]

@@ -1,5 +1,6 @@
 use std::{collections::VecDeque, path::PathBuf, time::Duration};
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 #[derive(Debug, Clone, Default)]
@@ -79,7 +80,7 @@ pub struct LayerInfo {
     pub repository: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoreEvent {
     pub tag: String,
     pub data: Value,

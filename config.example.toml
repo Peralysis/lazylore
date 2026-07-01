@@ -26,6 +26,16 @@ theme = "default"
 # opener = ""
 # diff_tool = ""
 
+# Content-addressed results (revision deltas, revision-to-revision diffs) are
+# memoized in memory and under the platform cache directory, since they're
+# keyed on immutable revision hashes and can never change. Working-tree
+# state, status, history, branches, and locks are never cached.
+[cache]
+enabled = true
+ttl_secs = 604800
+max_disk_mb = 128
+max_memory_entries = 256
+
 # Action names can be rebound without changing the remaining defaults.
 [keybindings]
 # quit = "ctrl+q"

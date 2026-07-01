@@ -89,7 +89,21 @@ theme = "default"
 editor = "code"
 opener = ""
 diff_tool = ""
+
+[cache]
+enabled = true
+ttl_secs = 604800
+max_disk_mb = 128
+max_memory_entries = 256
 ```
+
+Revision deltas and revision-to-revision diffs are keyed on immutable revision
+hashes, so LazyLore memoizes them in memory and under the platform cache
+directory to avoid re-invoking `lore` when you revisit a revision. Working-tree
+state, status, history, branches, and locks always come from a live `lore`
+call. Entries expire after `ttl_secs` and the on-disk cache is trimmed,
+oldest-first, once it exceeds `max_disk_mb`. Set `cache.enabled = false` to
+disable caching entirely.
 
 Bindings are action-based and accept single characters or names such as `space`, `enter`, `tab`, `escape`, `pageup`, and combinations such as `ctrl+p` or `alt+x`:
 
