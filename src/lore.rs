@@ -222,23 +222,23 @@ impl LoreClient {
         let cache_key = request
             .cacheable
             .then(|| RevisionCache::key(&self.repository, &request.args));
-        if let Some(key) = cache_key {
-            if let Some(events) = self.cache.get(key).await {
-                let redacted = redact(&request.args);
-                let display = display_command(&redacted);
-                return Ok(CommandOutput {
-                    events: (*events).clone(),
-                    timed_out: false,
-                    record: CommandRecord {
-                        argv: redacted,
-                        display,
-                        success: true,
-                        status: Some(0),
-                        duration: Duration::ZERO,
-                        stderr: String::new(),
-                    },
-                });
-            }
+        if let Some(key) = cache_key
+            && let Some(events) = self.cache.get(key).await
+        {
+            let redacted = redact(&request.args);
+            let display = display_command(&redacted);
+            return Ok(CommandOutput {
+                events: (*events).clone(),
+                timed_out: false,
+                record: CommandRecord {
+                    argv: redacted,
+                    display,
+                    success: true,
+                    status: Some(0),
+                    duration: Duration::ZERO,
+                    stderr: String::new(),
+                },
+            });
         }
 
         let _guard = if request.class == CommandClass::Mutating {
@@ -263,10 +263,11 @@ impl LoreClient {
                 let success = output.status.success() && !event_failure;
                 // Never cache failures, timeouts (handled below), or empty
                 // results, so offline/partial output can't poison the cache.
-                if let Some(key) = cache_key {
-                    if success && !events.is_empty() {
-                        self.cache.put(key, &events).await;
-                    }
+                if let Some(key) = cache_key
+                    && success
+                    && !events.is_empty()
+                {
+                    self.cache.put(key, &events).await;
                 }
                 Ok(CommandOutput {
                     events,
@@ -449,10 +450,10 @@ pub fn event_error(event: &LoreEvent) -> Option<String> {
     }
     let error = event.data.get("error")?;
     for key in ["message", "reason", "description"] {
-        if let Some(text) = error.get(key).and_then(Value::as_str) {
-            if !text.is_empty() {
-                return Some(text.into());
-            }
+        if let Some(text) = error.get(key).and_then(Value::as_str)
+            && !text.is_empty()
+        {
+            return Some(text.into());
         }
     }
     if error.is_null() || error == &Value::Object(Default::default()) {
