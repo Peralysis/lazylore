@@ -104,6 +104,10 @@ pub struct App {
     pub copied_revision: Option<String>,
     pub revision_view: Option<RevisionView>,
     pub should_quit: bool,
+    /// `true` when the user has explicitly forced offline mode (`--offline` or
+    /// the `O` toggle). Suppresses all server-touching commands and the
+    /// background reconnection poll.
+    pub offline_forced: bool,
     pub config: Config,
     lore: LoreClient,
     stream_tx: mpsc::UnboundedSender<StreamMessage>,
@@ -112,6 +116,8 @@ pub struct App {
     _watcher: Option<RepositoryWatcher>,
     pending_paths: HashSet<PathBuf>,
     last_watch_event: Option<Instant>,
+    /// When we were last performing an auto-offline reconnection probe.
+    last_reconnect_probe: Option<Instant>,
 }
 
 fn make_banner() -> String {
@@ -184,6 +190,7 @@ impl App {
             copied_revision: None,
             revision_view: None,
             should_quit: false,
+            offline_forced: false,
             config,
             lore,
             stream_tx,
@@ -192,11 +199,13 @@ impl App {
             _watcher: None,
             pending_paths: HashSet::new(),
             last_watch_event: None,
+            last_reconnect_probe: None,
         }
     }
 
     pub async fn new(repository: PathBuf, config: Config) -> Result<Self> {
-        let lore = LoreClient::new(config.general.lore_binary.clone(), &repository);
+        let lore = LoreClient::new(config.general.lore_binary.clone(), &repository)
+            .with_timeout(config.command_timeout());
         let version = lore.validate().await?;
         let commands = match lore.markdown_help().await {
             Ok(markdown) => merge_runtime_manifest(baseline_commands(), &markdown),
@@ -209,6 +218,7 @@ impl App {
         } else {
             None
         };
+        let offline_forced = config.general.offline;
         let mut app = Self {
             state: AppState::default(),
             focus: Focus::Files,
@@ -227,6 +237,7 @@ impl App {
             copied_revision: None,
             revision_view: None,
             should_quit: false,
+            offline_forced,
             config,
             lore,
             stream_tx,
@@ -235,6 +246,7 @@ impl App {
             _watcher: watcher,
             pending_paths: HashSet::new(),
             last_watch_event: None,
+            last_reconnect_probe: None,
         };
         app.state.repository.root = repository;
         app.state.repository.stale = true;
@@ -291,12 +303,58 @@ impl App {
         self.refresh_status(false).await;
     }
 
+    /// Returns `true` when the server is considered unreachable. This is the
+    /// case when the user has forced offline mode, or when the last `status`
+    /// response reported `remoteAvailable = false`.
+    pub fn is_offline(&self) -> bool {
+        self.offline_forced || !self.state.repository.remote_available
+    }
+
+    /// Re-probe the server connection if currently offline. Returns `true` when
+    /// the server is reachable (either already was, or just came back). Call
+    /// this before attempting any operation that requires a live connection.
+    async fn ensure_online(&mut self) -> bool {
+        if !self.is_offline() {
+            return true;
+        }
+        self.refresh_status(false).await;
+        !self.is_offline()
+    }
+
+    /// If in auto-offline mode, fire a low-frequency reconnection probe and
+    /// repopulate server-dependent data on reconnect. No-op when forced
+    /// offline or already online.
+    pub async fn maybe_reconnect(&mut self) {
+        if self.offline_forced || !self.is_offline() {
+            return;
+        }
+        let interval = self.config.reconnect_interval();
+        if self
+            .last_reconnect_probe
+            .is_some_and(|t| t.elapsed() < interval)
+        {
+            return;
+        }
+        self.last_reconnect_probe = Some(Instant::now());
+        self.refresh_status(false).await;
+        if !self.is_offline() {
+            // We just came back online — repopulate server-dependent data.
+            self.refresh_branches().await;
+            self.refresh_locks().await;
+            self.last_reconnect_probe = None;
+        }
+    }
+
     pub async fn refresh_all(&mut self, scan: bool) {
         self.refresh_status(scan).await;
         if self.state.repository_error.is_none() {
-            self.refresh_branches().await;
+            // Skip server-dependent refreshes when offline; last-known data
+            // remains in place until the connection is restored.
+            if !self.is_offline() {
+                self.refresh_branches().await;
+                self.refresh_locks().await;
+            }
             self.refresh_history(None).await;
-            self.refresh_locks().await;
             self.refresh_preview().await;
         }
     }
@@ -310,6 +368,12 @@ impl App {
         match self.lore.capture(CommandRequest::read(args)).await {
             Ok(output) => {
                 self.push_record(output.record.clone());
+                if output.timed_out {
+                    // A timeout means the server is unreachable, not that the
+                    // repository is broken. Keep last-known file state intact.
+                    self.state.repository.remote_available = false;
+                    return;
+                }
                 if !output.record.success {
                     self.state.repository_error =
                         Some(command_error(&output.events, &output.record.stderr));
@@ -842,14 +906,14 @@ impl App {
                     KeyCode::Char('y') if required.is_none() => {
                         let action = action.clone();
                         self.mode = Mode::Normal;
-                        self.execute_confirm(action);
+                        self.execute_confirm(action).await;
                     }
                     KeyCode::Enter
                         if required.as_ref().is_none_or(|required| required == typed) =>
                     {
                         let action = action.clone();
                         self.mode = Mode::Normal;
-                        self.execute_confirm(action);
+                        self.execute_confirm(action).await;
                     }
                     _ => {}
                 }
@@ -911,8 +975,33 @@ impl App {
                 self.refresh_preview().await;
             }
             KeyCode::Char('R') => self.refresh_all(false).await,
-            KeyCode::Char('p') => self.start(CommandRequest::mutate(["sync"])),
-            KeyCode::Char('P') => self.start(CommandRequest::mutate(["push"])),
+            KeyCode::Char('O') => {
+                self.offline_forced = !self.offline_forced;
+                if !self.offline_forced {
+                    // Re-probe immediately after disabling forced-offline.
+                    self.refresh_status(false).await;
+                    if !self.is_offline() {
+                        self.refresh_branches().await;
+                        self.refresh_locks().await;
+                    }
+                }
+            }
+            KeyCode::Char('p') => {
+                if self.ensure_online().await {
+                    self.start(CommandRequest::mutate(["sync"]));
+                } else {
+                    self.state.preview =
+                        vec!["Offline: sync is unavailable while the server is unreachable. Press O to toggle offline mode.".into()];
+                }
+            }
+            KeyCode::Char('P') => {
+                if self.ensure_online().await {
+                    self.start(CommandRequest::mutate(["push"]));
+                } else {
+                    self.state.preview =
+                        vec!["Offline: push is unavailable while the server is unreachable. Press O to toggle offline mode.".into()];
+                }
+            }
             KeyCode::Tab
                 if self.focus == Focus::Main && key.modifiers.contains(KeyModifiers::CONTROL) =>
             {
@@ -1252,7 +1341,7 @@ impl App {
         self.mode = confirm(title, message, None, action);
     }
 
-    fn execute_confirm(&mut self, action: ConfirmAction) {
+    async fn execute_confirm(&mut self, action: ConfirmAction) {
         match action {
             ConfirmAction::ResetFile(path) => {
                 self.start(CommandRequest::mutate(["reset", path.as_str()]))
@@ -1263,6 +1352,12 @@ impl App {
                 branch.as_str(),
             ])),
             ConfirmAction::SyncRevision(revision) => {
+                if !self.ensure_online().await {
+                    self.state.preview = vec![
+                        "Offline: sync is unavailable while the server is unreachable. Press O to toggle offline mode.".into(),
+                    ];
+                    return;
+                }
                 self.start(CommandRequest::mutate(["sync", revision.as_str()]))
             }
             ConfirmAction::RevertRevision(revision) => self.start(CommandRequest::mutate([
@@ -1275,7 +1370,16 @@ impl App {
                 "reset",
                 revision.as_str(),
             ])),
-            ConfirmAction::RunCommand { spec, args } => self.run_spec(spec, args),
+            ConfirmAction::RunCommand { spec, args } => {
+                if spec.requires_network && !self.ensure_online().await {
+                    self.state.preview = vec![format!(
+                        "Offline: `lore {}` requires a server connection. Press O to toggle offline mode.",
+                        spec.path
+                    )];
+                    return;
+                }
+                self.run_spec(spec, args)
+            }
         }
     }
 
@@ -1308,6 +1412,7 @@ impl App {
             PromptAction::Shell if !value.trim().is_empty() => self.run_shell(&value).await,
             PromptAction::CommandArguments(spec) => match split_arguments(&value) {
                 Ok(args) if spec.safety == Safety::Destructive => {
+                    // Network check deferred to execute_confirm → RunCommand.
                     self.mode = confirm(
                         "Destructive Lore command",
                         format!("Run lore {}?", spec.path),
@@ -1315,7 +1420,16 @@ impl App {
                         ConfirmAction::RunCommand { spec, args },
                     )
                 }
-                Ok(args) => self.run_spec(spec, args),
+                Ok(args) => {
+                    if spec.requires_network && !self.ensure_online().await {
+                        self.state.preview = vec![format!(
+                            "Offline: `lore {}` requires a server connection. Press O to toggle offline mode.",
+                            spec.path
+                        )];
+                        return;
+                    }
+                    self.run_spec(spec, args)
+                }
                 Err(error) => self.state.preview = vec![format!("Invalid arguments: {error}")],
             },
             _ => {}
@@ -2108,5 +2222,115 @@ mod tests {
             .branches
             .retain(|b| !(b.name == "feature" && b.location == "remote"));
         assert_eq!(app.branch_sync(&local), BranchSync::Untracked);
+    }
+
+    // --- Offline mode tests ---
+
+    #[test]
+    fn is_offline_when_forced() {
+        let mut app = App::test_fixture();
+        app.state.repository.remote_available = true;
+        app.offline_forced = true;
+        assert!(
+            app.is_offline(),
+            "forced offline should report offline even when remote_available"
+        );
+    }
+
+    #[test]
+    fn is_online_when_remote_available_and_not_forced() {
+        let mut app = App::test_fixture();
+        app.state.repository.remote_available = true;
+        app.offline_forced = false;
+        assert!(!app.is_offline());
+    }
+
+    #[test]
+    fn is_offline_when_remote_unavailable() {
+        let mut app = App::test_fixture();
+        app.state.repository.remote_available = false;
+        app.offline_forced = false;
+        assert!(app.is_offline());
+    }
+
+    #[test]
+    fn offline_toggle_switches_state() {
+        let mut app = App::test_fixture();
+        assert!(!app.offline_forced);
+        app.offline_forced = true;
+        assert!(app.offline_forced);
+        app.offline_forced = false;
+        assert!(!app.offline_forced);
+    }
+
+    #[test]
+    fn config_defaults_are_sane() {
+        let config = Config::default();
+        // command_timeout: min 500 ms floor, default 3000
+        assert_eq!(config.general.command_timeout_ms, 3_000);
+        assert_eq!(
+            config.command_timeout(),
+            std::time::Duration::from_millis(3_000)
+        );
+        // reconnect_interval: min 5 s floor, default 30 s
+        assert_eq!(config.general.reconnect_interval_ms, 30_000);
+        assert_eq!(
+            config.reconnect_interval(),
+            std::time::Duration::from_millis(30_000)
+        );
+        // offline defaults to false
+        assert!(!config.general.offline);
+    }
+
+    #[test]
+    fn config_floors_are_enforced() {
+        let mut config = Config::default();
+        config.general.command_timeout_ms = 100; // below 500 ms floor
+        assert_eq!(
+            config.command_timeout(),
+            std::time::Duration::from_millis(500)
+        );
+        config.general.reconnect_interval_ms = 1_000; // below 5 s floor
+        assert_eq!(
+            config.reconnect_interval(),
+            std::time::Duration::from_millis(5_000)
+        );
+    }
+
+    #[test]
+    fn network_commands_are_tagged_in_baseline() {
+        use crate::manifest::baseline_commands;
+        let commands = baseline_commands();
+        let requires_network = |path: &str| {
+            commands
+                .iter()
+                .find(|c| c.path == path)
+                .map(|c| c.requires_network)
+                .unwrap_or(false)
+        };
+        assert!(requires_network("sync"), "sync must require network");
+        assert!(requires_network("push"), "push must require network");
+        assert!(
+            requires_network("lock acquire"),
+            "lock acquire must require network"
+        );
+        assert!(
+            requires_network("lock release"),
+            "lock release must require network"
+        );
+        assert!(
+            requires_network("branch push"),
+            "branch push must require network"
+        );
+        // local-only commands must not be marked
+        assert!(
+            !requires_network("commit"),
+            "commit must not require network"
+        );
+        assert!(!requires_network("stage"), "stage must not require network");
+        assert!(
+            !requires_network("history"),
+            "history must not require network"
+        );
     }
 }

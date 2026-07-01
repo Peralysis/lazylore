@@ -1,6 +1,16 @@
 [general]
 lore_binary = "lore"
 refresh_interval_ms = 2000
+# Maximum milliseconds to wait for a lore sub-process. Commands that exceed
+# this limit are killed and the server is marked offline (min: 500).
+command_timeout_ms = 3000
+# How long (ms) to wait between background reconnection probes while offline.
+# Probes only fire in auto-offline mode; forced offline (--offline / O) disables
+# them entirely (min: 5000).
+reconnect_interval_ms = 30000
+# Start in forced-offline mode. Suppresses all server-touching commands and
+# background reconnection probes. Toggle at runtime with O.
+offline = false
 watch_files = true
 scan_on_start = false
 history_page_size = 100

@@ -39,6 +39,10 @@ struct Args {
     /// Enable diagnostic output
     #[arg(long)]
     debug: bool,
+    /// Start in offline mode: all server-touching commands are skipped and no
+    /// background reconnection probes are run. Toggle at runtime with `O`.
+    #[arg(long)]
+    offline: bool,
 }
 
 struct TerminalGuard {
@@ -81,6 +85,9 @@ async fn main() -> Result<()> {
     if args.scan {
         config.general.scan_on_start = true;
     }
+    if args.offline {
+        config.general.offline = true;
+    }
     let path = args
         .path
         .unwrap_or(std::env::current_dir().context("could not determine current directory")?);
@@ -119,6 +126,7 @@ async fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut Ap
             _ = tick.tick() => {
                 app.drain_watcher();
                 app.flush_watcher().await;
+                app.maybe_reconnect().await;
             }
         }
     }

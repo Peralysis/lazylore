@@ -24,6 +24,15 @@ pub struct Config {
 pub struct GeneralConfig {
     pub lore_binary: PathBuf,
     pub refresh_interval_ms: u64,
+    /// Maximum time (ms) to wait for a `lore` sub-process before treating it as a
+    /// timeout. On timeout the command is aborted and the server is marked offline.
+    pub command_timeout_ms: u64,
+    /// How long (ms) to wait between background reconnection probes while offline.
+    /// Probes only run in auto-offline mode (not when `--offline` was passed).
+    pub reconnect_interval_ms: u64,
+    /// Start in forced-offline mode; suppresses all server-touching operations and
+    /// background reconnection probes. Toggle at runtime with `O`.
+    pub offline: bool,
     pub watch_files: bool,
     pub scan_on_start: bool,
     pub history_page_size: usize,
@@ -51,6 +60,9 @@ impl Default for GeneralConfig {
         Self {
             lore_binary: PathBuf::from("lore"),
             refresh_interval_ms: 2_000,
+            command_timeout_ms: 3_000,
+            reconnect_interval_ms: 30_000,
+            offline: false,
             watch_files: true,
             scan_on_start: false,
             history_page_size: 100,
@@ -90,5 +102,15 @@ impl Config {
 
     pub fn refresh_interval(&self) -> Duration {
         Duration::from_millis(self.general.refresh_interval_ms.max(250))
+    }
+
+    /// Minimum 500 ms so extremely short values don't thrash subprocesses.
+    pub fn command_timeout(&self) -> Duration {
+        Duration::from_millis(self.general.command_timeout_ms.max(500))
+    }
+
+    /// Minimum 5 s so reconnection probes don't flood the server.
+    pub fn reconnect_interval(&self) -> Duration {
+        Duration::from_millis(self.general.reconnect_interval_ms.max(5_000))
     }
 }

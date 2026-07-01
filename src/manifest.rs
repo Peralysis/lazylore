@@ -16,6 +16,10 @@ pub struct CommandSpec {
     pub usage: String,
     pub safety: Safety,
     pub available: bool,
+    /// Whether this command requires an active server connection. When `true`
+    /// and the app is offline, LazyLore will re-probe before running it and
+    /// refuse if the server remains unreachable.
+    pub requires_network: bool,
 }
 
 impl CommandSpec {
@@ -26,7 +30,14 @@ impl CommandSpec {
             usage: format!("lore {path}"),
             safety,
             available: true,
+            requires_network: false,
         }
+    }
+
+    /// Mark this command as requiring a live server connection.
+    pub fn network(mut self) -> Self {
+        self.requires_network = true;
+        self
     }
 }
 
@@ -164,9 +175,53 @@ pub fn baseline_commands() -> Vec<CommandSpec> {
         ("shared-store info", ReadOnly),
         ("shared-store set-use-automatically", Mutating),
     ];
+    /// Commands that always require a live server connection.
+    const NETWORK_COMMANDS: &[&str] = &[
+        "clone",
+        "sync",
+        "push",
+        "branch push",
+        "branch merge",
+        "branch merge into",
+        "branch merge start",
+        "branch merge restart",
+        "branch merge abort",
+        "branch merge resolve",
+        "branch merge resolve mine",
+        "branch merge resolve theirs",
+        "branch merge unresolve",
+        "branch protect",
+        "branch unprotect",
+        "revision sync",
+        "revision cherry-pick",
+        "revision cherry-pick abort",
+        "revision cherry-pick restart",
+        "revision cherry-pick resolve",
+        "revision cherry-pick resolve mine",
+        "revision cherry-pick resolve theirs",
+        "revision cherry-pick unresolve",
+        "lock acquire",
+        "lock query",
+        "lock release",
+        "repository create",
+        "repository clone",
+        "auth login",
+        "auth logout",
+        "auth clear",
+        "login",
+        "shared-store create",
+        "notification subscribe",
+    ];
+
     groups
         .iter()
-        .map(|(path, safety)| CommandSpec::new(path, "Lore command", *safety))
+        .map(|(path, safety)| {
+            let mut spec = CommandSpec::new(path, "Lore command", *safety);
+            if NETWORK_COMMANDS.contains(path) {
+                spec.requires_network = true;
+            }
+            spec
+        })
         .collect()
 }
 
@@ -194,6 +249,7 @@ pub fn merge_runtime_manifest(baseline: Vec<CommandSpec>, markdown: &str) -> Vec
                     usage: String::new(),
                     safety: Safety::Destructive,
                     available: true,
+                    requires_network: false,
                 });
         } else if line.starts_with("**Usage:**") {
             if let Some(path) = current.as_ref() {

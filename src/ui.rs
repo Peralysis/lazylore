@@ -250,7 +250,9 @@ fn render_repository(frame: &mut Frame, area: Rect, app: &App) {
     let line2 = Line::from(line2_spans);
 
     // Line 3: @revision + colored remote state.
-    let (remote_text, remote_color) = if !repo.remote_available {
+    let (remote_text, remote_color) = if app.offline_forced {
+        ("offline (forced)", Color::DarkGray)
+    } else if !repo.remote_available {
         ("offline", Color::Red)
     } else if !repo.remote_authorized {
         ("unauthorized", Color::Yellow)
@@ -596,9 +598,9 @@ fn render_help(frame: &mut Frame, area: Rect) {
         Line::from("Tab / Right  Next pane             Left / Shift+Tab Previous pane"),
         Line::from("1–5 / 0      Focus pane directly   j/k or Up/Down   Move selection"),
         Line::from("p / P      Sync / push            R              Refresh tracked state"),
-        Line::from("?          Help                   @              Focus command log pane"),
-        Line::from(":          Shell command          Ctrl+P         All Lore commands"),
-        Line::from("q / Ctrl+C Quit"),
+        Line::from("O          Toggle offline mode    ?              Help"),
+        Line::from("@          Focus command log      :              Shell command"),
+        Line::from("Ctrl+P     All Lore commands      q / Ctrl+C     Quit"),
         Line::from(""),
         Line::from(Span::styled(
             "Lore notes",
@@ -609,6 +611,11 @@ fn render_help(frame: &mut Frame, area: Rect) {
         Line::from("Lore has no stash, rebase, tags, worktrees, or Git-style remotes."),
         Line::from("The [unscanned] marker means changes made before startup may need Files → r."),
         Line::from("Destructive commands require confirmation; typed confirmation is `confirm`."),
+        Line::from("Offline mode: when the server is unreachable, sync/push/lock commands are"),
+        Line::from("  skipped automatically. Background probes restore connection (~30 s)."),
+        Line::from(
+            "  `O` toggles forced-offline mode (disables probes); `--offline` flag at start.",
+        ),
         Line::from(""),
         Line::from("Esc or ? closes this window."),
     ];

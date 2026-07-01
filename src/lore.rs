@@ -2,7 +2,7 @@ use std::{
     path::{Path, PathBuf},
     process::Stdio,
     sync::Arc,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -13,6 +13,7 @@ use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, BufReader},
     process::Command,
     sync::{Mutex, broadcast, mpsc},
+    time::timeout,
 };
 
 use crate::{
@@ -54,6 +55,10 @@ impl CommandRequest {
 pub struct CommandOutput {
     pub events: Vec<LoreEvent>,
     pub record: CommandRecord,
+    /// `true` when the command was killed because it exceeded the configured
+    /// `command_timeout`. Callers should treat this as a transient offline
+    /// condition rather than a hard repository error.
+    pub timed_out: bool,
 }
 
 #[derive(Debug)]
@@ -70,6 +75,7 @@ pub struct LoreClient {
     repository: PathBuf,
     mutation_lock: Arc<Mutex<()>>,
     cancel_tx: broadcast::Sender<()>,
+    command_timeout: Duration,
 }
 
 #[derive(Deserialize)]
@@ -88,7 +94,15 @@ impl LoreClient {
             repository: repository.into(),
             mutation_lock: Arc::new(Mutex::new(())),
             cancel_tx,
+            command_timeout: Duration::from_secs(30),
         }
+    }
+
+    /// Override the per-command timeout. Use `Config::command_timeout()` to
+    /// derive the value from the user's configuration.
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.command_timeout = timeout;
+        self
     }
 
     pub fn repository(&self) -> &Path {
@@ -155,27 +169,50 @@ impl LoreClient {
             None
         };
         let started = Instant::now();
-        let output = self
-            .command(&request.args)
-            .output()
-            .await
-            .with_context(|| format!("failed to execute {}", display_command(&request.args)))?;
-        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-        let events = parse_events(&output.stdout, &stderr)?;
-        let status = output.status.code();
-        let event_failure = completion_failed(&events);
-        let success = output.status.success() && !event_failure;
-        Ok(CommandOutput {
-            events,
-            record: CommandRecord {
-                argv: redact(&request.args),
-                display: display_command(&redact(&request.args)),
-                success,
-                status,
-                duration: started.elapsed(),
-                stderr,
-            },
-        })
+        let redacted = redact(&request.args);
+        let display = display_command(&redacted);
+        let mut cmd = self.command(&request.args);
+        cmd.kill_on_drop(true);
+        let child = cmd
+            .spawn()
+            .with_context(|| format!("failed to execute {display}"))?;
+        match timeout(self.command_timeout, child.wait_with_output()).await {
+            Ok(Ok(output)) => {
+                let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+                let events = parse_events(&output.stdout, &stderr)?;
+                let status = output.status.code();
+                let event_failure = completion_failed(&events);
+                let success = output.status.success() && !event_failure;
+                Ok(CommandOutput {
+                    events,
+                    timed_out: false,
+                    record: CommandRecord {
+                        argv: redacted,
+                        display,
+                        success,
+                        status,
+                        duration: started.elapsed(),
+                        stderr,
+                    },
+                })
+            }
+            Ok(Err(error)) => Err(error).with_context(|| format!("failed to execute {display}")),
+            Err(_elapsed) => {
+                // The Child is dropped here, which triggers kill_on_drop.
+                Ok(CommandOutput {
+                    events: vec![],
+                    timed_out: true,
+                    record: CommandRecord {
+                        argv: redacted,
+                        display,
+                        success: false,
+                        status: None,
+                        duration: started.elapsed(),
+                        stderr: "timed out".into(),
+                    },
+                })
+            }
+        }
     }
 
     pub fn stream(&self, request: CommandRequest, tx: mpsc::UnboundedSender<StreamMessage>) {
