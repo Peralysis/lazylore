@@ -280,8 +280,17 @@ impl App {
         self.refresh_all(self.config.general.scan_on_start).await;
     }
 
-    pub fn stream_receiver(&mut self) -> &mut mpsc::UnboundedReceiver<StreamMessage> {
-        &mut self.stream_rx
+    /// Split, disjoint borrows of the stream and watch receivers so the
+    /// event loop can `select!` on both directly (a second `&mut self`
+    /// accessor call per receiver would conflict, since each borrows all of
+    /// `App` as far as the borrow checker is concerned).
+    pub fn receivers(
+        &mut self,
+    ) -> (
+        &mut mpsc::UnboundedReceiver<StreamMessage>,
+        &mut mpsc::UnboundedReceiver<PathBuf>,
+    ) {
+        (&mut self.stream_rx, &mut self.watch_rx)
     }
 
     pub fn drain_watcher(&mut self) {
@@ -302,7 +311,7 @@ impl App {
         if self.pending_paths.is_empty()
             || self
                 .last_watch_event
-                .is_some_and(|time| time.elapsed() < Duration::from_millis(500))
+                .is_some_and(|time| time.elapsed() < Duration::from_millis(300))
         {
             return;
         }
@@ -2070,7 +2079,7 @@ impl App {
 }
 
 pub fn resolve_repository(path: &Path) -> Result<PathBuf> {
-    path.canonicalize()
+    dunce::canonicalize(path)
         .with_context(|| format!("invalid repository path {}", path.display()))
 }
 

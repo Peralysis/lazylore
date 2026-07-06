@@ -1,6 +1,7 @@
 use std::{
     io::{self, stdout},
     path::PathBuf,
+    time::Duration,
 };
 
 use anyhow::{Context, Result};
@@ -140,25 +141,35 @@ async fn show_loading_screen(
 async fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> Result<()> {
     let mut events = EventStream::new();
     let mut tick = tokio::time::interval(app.config.refresh_interval());
+    // Flushing on its own short interval (rather than only on the slower
+    // `tick` above) keeps the debounce in `flush_watcher` the only thing
+    // standing between a settled file edit and it showing up on screen.
+    let mut flush_tick = tokio::time::interval(Duration::from_millis(200));
     loop {
         terminal.draw(|frame| ui::render(frame, app))?;
         if app.should_quit {
             break;
         }
+        let (stream_rx, watch_rx) = app.receivers();
         tokio::select! {
             event = events.next() => {
                 if let Some(Ok(Event::Key(key))) = event
                     && key.kind == KeyEventKind::Press { app.on_key(key).await; }
             }
-            message = app.stream_receiver().recv() => {
+            message = stream_rx.recv() => {
                 if let Some(message) = message {
                     let finished = app.handle_stream(message);
                     if finished { app.refresh_all(false).await; }
                 }
             }
-            _ = tick.tick() => {
+            Some(path) = watch_rx.recv() => {
+                app.note_path_change(path);
                 app.drain_watcher();
+            }
+            _ = flush_tick.tick() => {
                 app.flush_watcher().await;
+            }
+            _ = tick.tick() => {
                 app.maybe_reconnect().await;
             }
         }
