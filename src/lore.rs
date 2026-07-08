@@ -215,6 +215,21 @@ impl LoreClient {
         command
     }
 
+    /// Builds a command for an interactive Lore subcommand, e.g. `auth
+    /// login`, that needs to prompt the user directly (browser flow, device
+    /// code, password entry). Deliberately omits `--json`, `--non-interactive`,
+    /// and `--offline` — callers should suspend the TUI's alternate screen
+    /// first and let this process inherit the real terminal.
+    pub fn interactive_command(&self, args: &[&str]) -> Command {
+        let mut command = Command::new(&self.binary);
+        command
+            .current_dir(&self.repository)
+            .args(["--no-pager", "--repository"])
+            .arg(&self.repository)
+            .args(args);
+        command
+    }
+
     pub async fn capture(&self, request: CommandRequest) -> Result<CommandOutput> {
         // Content-addressed reads can be served from the cache without ever
         // spawning `lore`. Only requests explicitly marked `cacheable` by the
@@ -516,6 +531,8 @@ mod tests {
             include_str!("../tests/fixtures/status.ndjson"),
             include_str!("../tests/fixtures/branches.ndjson"),
             include_str!("../tests/fixtures/diff.ndjson"),
+            include_str!("../tests/fixtures/unauthorized-status.ndjson"),
+            include_str!("../tests/fixtures/auth-info.ndjson"),
         ] {
             let events: Vec<LoreEvent> = fixture
                 .lines()
@@ -524,6 +541,21 @@ mod tests {
                 .collect();
             assert!(events.iter().any(|event| event.tag == "complete"));
         }
+    }
+
+    #[test]
+    fn extracts_identity_from_auth_info_fixture() {
+        let fixture = include_str!("../tests/fixtures/auth-info.ndjson");
+        let events: Vec<LoreEvent> = fixture
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(|line| parse_event_line(line).unwrap())
+            .collect();
+        let id = events
+            .iter()
+            .find(|event| event.tag == "authUserInfo")
+            .map(|event| crate::model::field_string(&event.data, "id"));
+        assert_eq!(id.as_deref(), Some("3a1c0fad-530c-44ef-b25a-bfa6aad45bc6"));
     }
 
     #[test]
