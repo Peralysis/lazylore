@@ -46,30 +46,45 @@ struct Args {
     offline: bool,
 }
 
+/// Enters raw mode and the alternate screen. Paired with `leave_screen`; also
+/// used directly by `TerminalGuard` at startup/shutdown.
+fn enter_screen(mouse: bool) -> Result<()> {
+    enable_raw_mode().context("failed to enable terminal raw mode")?;
+    if mouse {
+        execute!(stdout(), EnterAlternateScreen, EnableMouseCapture)?;
+    } else {
+        execute!(stdout(), EnterAlternateScreen)?;
+    }
+    Ok(())
+}
+
+/// Leaves the alternate screen and disables raw mode, restoring the normal
+/// terminal. Used both at shutdown and to temporarily hand the real terminal
+/// to an interactive `lore` subcommand (e.g. `auth login`).
+fn leave_screen(mouse: bool) -> Result<()> {
+    disable_raw_mode().context("failed to disable terminal raw mode")?;
+    if mouse {
+        execute!(stdout(), DisableMouseCapture, LeaveAlternateScreen)?;
+    } else {
+        execute!(stdout(), LeaveAlternateScreen)?;
+    }
+    Ok(())
+}
+
 struct TerminalGuard {
     mouse: bool,
 }
 
 impl TerminalGuard {
     fn enter(mouse: bool) -> Result<Self> {
-        enable_raw_mode().context("failed to enable terminal raw mode")?;
-        if mouse {
-            execute!(stdout(), EnterAlternateScreen, EnableMouseCapture)?;
-        } else {
-            execute!(stdout(), EnterAlternateScreen)?;
-        }
+        enter_screen(mouse)?;
         Ok(Self { mouse })
     }
 }
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
-        let _ = disable_raw_mode();
-        if self.mouse {
-            let _ = execute!(stdout(), DisableMouseCapture, LeaveAlternateScreen);
-        } else {
-            let _ = execute!(stdout(), LeaveAlternateScreen);
-        }
+        let _ = leave_screen(self.mouse);
     }
 }
 
@@ -172,6 +187,17 @@ async fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut Ap
             _ = tick.tick() => {
                 app.maybe_reconnect().await;
             }
+        }
+        if app.take_pending_login() {
+            // Hand the real terminal to `lore auth login` for an interactive
+            // (browser/device-code/password) flow, then restore the TUI.
+            leave_screen(app.config.ui.mouse)?;
+            app.run_interactive_login().await;
+            enter_screen(app.config.ui.mouse)?;
+            terminal.clear()?;
+        }
+        if app.take_pending_identity_reconcile() {
+            app.reconcile_identity().await;
         }
     }
     Ok(())

@@ -1,17 +1,19 @@
 use std::{
     collections::HashSet,
     path::{Path, PathBuf},
+    process::Stdio,
     time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use tokio::{process::Command, sync::mpsc};
+use tokio::{io::AsyncReadExt, process::Command, sync::mpsc};
 
 use crate::{
     cache::RevisionCache,
     config::Config,
     lore::{CommandClass, CommandRequest, LoreClient, StreamMessage, event_error, event_summary},
+    lore_config,
     manifest::{CommandSpec, Safety, baseline_commands, merge_runtime_manifest, split_arguments},
     model::{
         AppState, Branch, BranchSync, BranchTab, Conflict, DiffMode, FileLock, FileStatus, Focus,
@@ -29,6 +31,12 @@ pub enum PromptAction {
     ResetBranch { branch: String },
     Shell,
     CommandArguments(CommandSpec),
+    /// First step of the `L` login flow: collects a token type (e.g.
+    /// `api-key`, `eg1`, `lore`). A blank value requests interactive login
+    /// instead, since `lore auth login --token` requires `--token-type`.
+    Authenticate,
+    /// Second step: collects the token value for the previously entered type.
+    AuthenticateToken { token_type: String },
 }
 
 #[derive(Debug, Clone)]
@@ -109,6 +117,17 @@ pub struct App {
     /// the `O` toggle). Suppresses all server-touching commands and the
     /// background reconnection poll.
     pub offline_forced: bool,
+    /// Set when the user submits a blank token in the authenticate prompt,
+    /// requesting an interactive `lore auth login` handoff. The `run` loop in
+    /// `main.rs` polls this via `take_pending_login`, since it's the only
+    /// place that owns the terminal and can suspend the alternate screen.
+    pending_login: bool,
+    /// Set when a streamed `login`/`auth login` command completes
+    /// successfully, so the `run` loop can reconcile the repository's
+    /// `.lore/config.toml` identity afterward. Set outside of an `async`
+    /// context (`handle_stream`), so it's polled the same way as
+    /// `pending_login` rather than awaited directly.
+    pending_identity_reconcile: bool,
     pub config: Config,
     lore: LoreClient,
     stream_tx: mpsc::UnboundedSender<StreamMessage>,
@@ -192,6 +211,8 @@ impl App {
             revision_view: None,
             should_quit: false,
             offline_forced: false,
+            pending_login: false,
+            pending_identity_reconcile: false,
             config,
             lore,
             stream_tx,
@@ -258,6 +279,8 @@ impl App {
             revision_view: None,
             should_quit: false,
             offline_forced,
+            pending_login: false,
+            pending_identity_reconcile: false,
             config,
             lore,
             stream_tx,
@@ -360,6 +383,131 @@ impl App {
         }
         self.refresh_status(false).await;
         !self.is_offline()
+    }
+
+    /// Re-probes connectivity (via `ensure_online`) and then checks that the
+    /// last `status` response reported us as authorized. Call this before any
+    /// operation that requires an authenticated server connection (sync,
+    /// push, locks). `action` is a short human-readable description used in
+    /// the preview message, e.g. `"sync"`.
+    async fn ensure_authorized(&mut self, action: &str) -> bool {
+        if !self.ensure_online().await {
+            self.state.preview = vec![format!(
+                "Offline: {action} is unavailable while the server is unreachable. Press O to toggle offline mode."
+            )];
+            return false;
+        }
+        if !self.state.repository.remote_authorized {
+            self.state.preview = vec![format!(
+                "Not authenticated — press L to log in before {action}."
+            )];
+            return false;
+        }
+        true
+    }
+
+    /// Returns and clears the pending-interactive-login flag. The `run` loop
+    /// in `main.rs` polls this after every event, since it's the only place
+    /// that owns the terminal and can suspend the alternate screen for the
+    /// handoff to an interactive `lore auth login`.
+    pub fn take_pending_login(&mut self) -> bool {
+        std::mem::take(&mut self.pending_login)
+    }
+
+    /// Returns and clears the pending-identity-reconcile flag. The `run` loop
+    /// in `main.rs` polls this after every event, mirroring
+    /// `take_pending_login`, since `reconcile_identity` is async and
+    /// `handle_stream` (where a streamed login's success is observed) is not.
+    pub fn take_pending_identity_reconcile(&mut self) -> bool {
+        std::mem::take(&mut self.pending_identity_reconcile)
+    }
+
+    /// After a successful `lore login`/`lore auth login`, the repository's
+    /// `.lore/config.toml` can still point `identity` at a stale value (e.g.
+    /// an email address) that has no stored token under it, which makes every
+    /// remote call fail with "No token stored" even though the login itself
+    /// succeeded. Sync it to the ID `lore auth info` reports for the identity
+    /// that was just authenticated. Returns `true` when `self.state.preview`
+    /// was set (an update happened, or reconciliation failed), so callers can
+    /// avoid clobbering it with their own generic success message.
+    pub async fn reconcile_identity(&mut self) -> bool {
+        let Ok(output) = self
+            .lore
+            .capture(CommandRequest::read(["auth", "info"]))
+            .await
+        else {
+            return false;
+        };
+        self.push_record(output.record.clone());
+        if !output.record.success {
+            return false;
+        }
+        let id = output
+            .events
+            .iter()
+            .find(|event| event.tag == "authUserInfo")
+            .map(|event| field_string(&event.data, "id"));
+        let Some(id) = id.filter(|id| !id.is_empty()) else {
+            return false;
+        };
+        let previewed = match lore_config::set_identity(self.lore.repository(), &id) {
+            Ok(Some(previous)) => {
+                self.state.preview =
+                    vec![format!("Repository identity updated to {id} (was {previous}).")];
+                true
+            }
+            Ok(None) => false,
+            Err(error) => {
+                self.state.preview =
+                    vec![format!("Failed to update repository identity: {error}")];
+                true
+            }
+        };
+        self.refresh_status(false).await;
+        previewed
+    }
+
+    /// Runs `lore auth login` interactively, inheriting the real terminal for
+    /// stdin/stdout (so browser/device-code/password prompts work), while
+    /// capturing stderr so a failure reason can be shown in the preview pane
+    /// instead of being lost when the TUI redraws over it. Callers must
+    /// suspend the TUI's alternate screen first and restore it afterward.
+    pub async fn run_interactive_login(&mut self) {
+        let mut command = self.lore.interactive_command(&["auth", "login"]);
+        command.stderr(Stdio::piped());
+        let mut child = match command.spawn() {
+            Ok(child) => child,
+            Err(error) => {
+                self.state.preview = vec![format!("Failed to launch interactive login: {error}")];
+                return;
+            }
+        };
+        let mut stderr = child.stderr.take();
+        let mut stderr_buf = Vec::new();
+        let (status, _) = tokio::join!(child.wait(), async {
+            if let Some(stderr) = stderr.as_mut() {
+                let _ = stderr.read_to_end(&mut stderr_buf).await;
+            }
+        });
+        match status {
+            Ok(status) if status.success() => {
+                if !self.reconcile_identity().await {
+                    self.state.preview = vec!["Authenticated.".into()];
+                }
+            }
+            Ok(status) => {
+                let mut lines = vec![format!("Interactive login exited with status {status}.")];
+                lines.extend(
+                    String::from_utf8_lossy(&stderr_buf)
+                        .lines()
+                        .map(str::to_owned),
+                );
+                self.state.preview = lines;
+            }
+            Err(error) => {
+                self.state.preview = vec![format!("Failed to launch interactive login: {error}")];
+            }
+        }
     }
 
     /// If in auto-offline mode, fire a low-frequency reconnection probe and
@@ -779,6 +927,9 @@ impl App {
                     },
                     record.duration
                 ));
+                if record.success && is_login_command(&record.argv) {
+                    self.pending_identity_reconcile = true;
+                }
                 self.push_record(record);
                 return true;
             }
@@ -1054,20 +1205,22 @@ impl App {
                 }
             }
             KeyCode::Char('p') => {
-                if self.ensure_online().await {
+                if self.ensure_authorized("sync").await {
                     self.start(CommandRequest::mutate(["sync"]));
-                } else {
-                    self.state.preview =
-                        vec!["Offline: sync is unavailable while the server is unreachable. Press O to toggle offline mode.".into()];
                 }
             }
             KeyCode::Char('P') => {
-                if self.ensure_online().await {
+                if self.ensure_authorized("push").await {
                     self.start(CommandRequest::mutate(["push"]));
-                } else {
-                    self.state.preview =
-                        vec!["Offline: push is unavailable while the server is unreachable. Press O to toggle offline mode.".into()];
                 }
+            }
+            KeyCode::Char('L') => {
+                self.mode = Mode::Prompt {
+                    title: "Authenticate — token type: api-key/eg1/lore (leave blank for interactive login)".into(),
+                    value: String::new(),
+                    secret: false,
+                    action: PromptAction::Authenticate,
+                };
             }
             KeyCode::Tab
                 if self.focus == Focus::Main && key.modifiers.contains(KeyModifiers::CONTROL) =>
@@ -1129,7 +1282,7 @@ impl App {
                     self.toggle_tree_node(path).await;
                 }
             }
-            KeyCode::Char(' ') => self.space_action(),
+            KeyCode::Char(' ') => self.space_action().await,
             KeyCode::Char('a') if self.focus == Focus::Files => self.stage_all(),
             KeyCode::Char('c') if self.focus == Focus::Files => {
                 self.mode = Mode::Prompt {
@@ -1306,7 +1459,7 @@ impl App {
         }
     }
 
-    fn space_action(&mut self) {
+    async fn space_action(&mut self) {
         match self.focus {
             Focus::Files => {
                 if let Some(file) = self.state.files.get(self.file_selected) {
@@ -1330,7 +1483,9 @@ impl App {
                 self.confirm_revision(ConfirmKind::Sync)
             }
             Focus::Locks => {
-                if let Some(lock) = self.state.locks.get(self.lock_selected) {
+                if let Some(lock) = self.state.locks.get(self.lock_selected).cloned()
+                    && self.ensure_authorized("locks").await
+                {
                     if lock.locked {
                         self.start(CommandRequest::mutate([
                             "lock",
@@ -1499,6 +1654,41 @@ impl App {
                 }
                 Err(error) => self.state.preview = vec![format!("Invalid arguments: {error}")],
             },
+            PromptAction::Authenticate => {
+                if value.trim().is_empty() {
+                    // Blank: hand off to an interactive `lore auth login`.
+                    // The `run` loop in `main.rs` polls `take_pending_login`
+                    // since it owns the terminal.
+                    self.pending_login = true;
+                } else {
+                    let token_type = value.trim().to_string();
+                    self.mode = Mode::Prompt {
+                        title: format!("Authenticate — token value for type \"{token_type}\""),
+                        value: String::new(),
+                        secret: true,
+                        action: PromptAction::AuthenticateToken { token_type },
+                    };
+                }
+            }
+            PromptAction::AuthenticateToken { token_type } if !value.trim().is_empty() => {
+                if let Some(spec) = self
+                    .commands
+                    .iter()
+                    .find(|spec| spec.path == "auth login")
+                    .cloned()
+                {
+                    self.run_spec(
+                        spec,
+                        vec!["--token-type".into(), token_type, "--token".into(), value],
+                    );
+                } else {
+                    self.state.preview =
+                        vec!["`lore auth login` is unavailable on this Lore install.".into()];
+                }
+            }
+            PromptAction::AuthenticateToken { .. } => {
+                self.state.preview = vec!["Authentication cancelled: no token entered.".into()];
+            }
             _ => {}
         }
     }
@@ -1600,6 +1790,7 @@ fn action_keys(focus: Focus) -> Vec<(&'static str, KeyCode, KeyModifiers)> {
         ("refresh", KeyCode::Char('R'), KeyModifiers::NONE),
         ("sync", KeyCode::Char('p'), KeyModifiers::NONE),
         ("push", KeyCode::Char('P'), KeyModifiers::NONE),
+        ("authenticate", KeyCode::Char('L'), KeyModifiers::NONE),
         ("focus_main", KeyCode::Char('0'), KeyModifiers::NONE),
         ("focus_repository", KeyCode::Char('1'), KeyModifiers::NONE),
         ("focus_files", KeyCode::Char('2'), KeyModifiers::NONE),
@@ -1715,6 +1906,16 @@ fn filtered_commands<'a>(commands: &'a [CommandSpec], query: &str) -> Vec<&'a Co
             words.iter().all(|word| haystack.contains(word))
         })
         .collect()
+}
+
+/// Whether `argv` (the redacted command line, e.g. from `CommandRecord::argv`)
+/// invoked `lore login` or `lore auth login` — the two commands that can
+/// establish a new stored token and thus warrant an identity reconcile.
+fn is_login_command(argv: &[String]) -> bool {
+    matches!(
+        (argv.first().map(String::as_str), argv.get(1).map(String::as_str)),
+        (Some("login"), _) | (Some("auth"), Some("login"))
+    )
 }
 
 fn command_error(events: &[crate::model::LoreEvent], stderr: &str) -> String {
@@ -2102,6 +2303,20 @@ mod tests {
         assert_eq!(moved(0, 2, -1), 0);
     }
 
+    #[test]
+    fn recognizes_login_commands() {
+        assert!(is_login_command(&["login".into()]));
+        assert!(is_login_command(&[
+            "login".into(),
+            "--token-type".into(),
+            "api-key".into()
+        ]));
+        assert!(is_login_command(&["auth".into(), "login".into()]));
+        assert!(!is_login_command(&["auth".into(), "info".into()]));
+        assert!(!is_login_command(&["status".into()]));
+        assert!(!is_login_command(&[]));
+    }
+
     #[tokio::test]
     async fn pane_focus_cycles_and_wraps() {
         let mut app = App::test_fixture();
@@ -2418,5 +2633,92 @@ mod tests {
             !requires_network("history"),
             "history must not require network"
         );
+    }
+
+    #[tokio::test]
+    async fn ensure_authorized_blocks_when_unauthorized() {
+        let mut app = App::test_fixture();
+        app.state.repository.remote_available = true;
+        app.state.repository.remote_authorized = false;
+        app.offline_forced = false;
+        assert!(!app.ensure_authorized("sync").await);
+        assert_eq!(
+            app.state.preview,
+            vec!["Not authenticated — press L to log in before sync.".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn ensure_authorized_passes_when_authorized() {
+        let mut app = App::test_fixture();
+        app.state.repository.remote_available = true;
+        app.state.repository.remote_authorized = true;
+        app.offline_forced = false;
+        assert!(app.ensure_authorized("sync").await);
+    }
+
+    #[tokio::test]
+    async fn authenticate_prompt_blank_value_requests_interactive_login() {
+        let mut app = App::test_fixture();
+        assert!(!app.take_pending_login());
+        app.submit_prompt(PromptAction::Authenticate, String::new())
+            .await;
+        assert!(app.take_pending_login());
+        // Cleared after being taken once.
+        assert!(!app.take_pending_login());
+    }
+
+    #[tokio::test]
+    async fn authenticate_prompt_token_type_advances_to_token_step() {
+        let mut app = App::test_fixture();
+        app.submit_prompt(PromptAction::Authenticate, "lore".into())
+            .await;
+        assert!(!app.take_pending_login());
+        match &app.mode {
+            Mode::Prompt {
+                secret,
+                action: PromptAction::AuthenticateToken { token_type },
+                ..
+            } => {
+                assert!(*secret, "token value must be entered as a secret");
+                assert_eq!(token_type, "lore");
+            }
+            other => panic!("expected AuthenticateToken prompt, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn authenticate_token_step_blank_cancels_without_running_a_command() {
+        let mut app = App::test_fixture();
+        app.submit_prompt(
+            PromptAction::AuthenticateToken {
+                token_type: "lore".into(),
+            },
+            String::new(),
+        )
+        .await;
+        assert_eq!(
+            app.state.preview,
+            vec!["Authentication cancelled: no token entered.".to_string()]
+        );
+    }
+
+    #[test]
+    fn authenticate_action_is_globally_bound() {
+        for focus in [
+            Focus::Files,
+            Focus::Branches,
+            Focus::Revisions,
+            Focus::Locks,
+            Focus::Main,
+            Focus::Repository,
+        ] {
+            assert!(
+                action_keys(focus)
+                    .iter()
+                    .any(|(action, ..)| *action == "authenticate"),
+                "authenticate must be bound regardless of focus ({focus:?})"
+            );
+        }
     }
 }
