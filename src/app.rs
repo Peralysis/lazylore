@@ -28,7 +28,9 @@ pub enum PromptAction {
     Commit,
     Amend,
     NewBranch,
-    ResetBranch { branch: String },
+    ResetBranch {
+        branch: String,
+    },
     Shell,
     CommandArguments(CommandSpec),
     /// First step of the `L` login flow: collects a token type (e.g.
@@ -36,7 +38,9 @@ pub enum PromptAction {
     /// instead, since `lore auth login --token` requires `--token-type`.
     Authenticate,
     /// Second step: collects the token value for the previously entered type.
-    AuthenticateToken { token_type: String },
+    AuthenticateToken {
+        token_type: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -452,14 +456,14 @@ impl App {
         };
         let previewed = match lore_config::set_identity(self.lore.repository(), &id) {
             Ok(Some(previous)) => {
-                self.state.preview =
-                    vec![format!("Repository identity updated to {id} (was {previous}).")];
+                self.state.preview = vec![format!(
+                    "Repository identity updated to {id} (was {previous})."
+                )];
                 true
             }
             Ok(None) => false,
             Err(error) => {
-                self.state.preview =
-                    vec![format!("Failed to update repository identity: {error}")];
+                self.state.preview = vec![format!("Failed to update repository identity: {error}")];
                 true
             }
         };
@@ -1913,7 +1917,10 @@ fn filtered_commands<'a>(commands: &'a [CommandSpec], query: &str) -> Vec<&'a Co
 /// establish a new stored token and thus warrant an identity reconcile.
 fn is_login_command(argv: &[String]) -> bool {
     matches!(
-        (argv.first().map(String::as_str), argv.get(1).map(String::as_str)),
+        (
+            argv.first().map(String::as_str),
+            argv.get(1).map(String::as_str)
+        ),
         (Some("login"), _) | (Some("auth"), Some("login"))
     )
 }
@@ -2280,8 +2287,7 @@ impl App {
 }
 
 pub fn resolve_repository(path: &Path) -> Result<PathBuf> {
-    dunce::canonicalize(path)
-        .with_context(|| format!("invalid repository path {}", path.display()))
+    dunce::canonicalize(path).with_context(|| format!("invalid repository path {}", path.display()))
 }
 
 #[cfg(test)]
