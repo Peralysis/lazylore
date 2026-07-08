@@ -2,6 +2,8 @@ name: CI
 
 on:
   push:
+    branches: [main]
+    tags: ['v*']
     paths-ignore:
       - '**.md'
       - '.github/**'
@@ -15,6 +17,10 @@ on:
       - 'LICENSE'
       - '.gitignore'
       - 'config.example.toml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 permissions:
   contents: read
