@@ -2,6 +2,7 @@ pub mod app;
 pub mod cache;
 pub mod config;
 pub mod lore;
+pub mod lore_config;
 pub mod manifest;
 pub mod model;
 pub mod tree;

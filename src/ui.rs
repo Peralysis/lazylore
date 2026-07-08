@@ -302,7 +302,7 @@ fn render_repository(frame: &mut Frame, area: Rect, app: &App) {
     } else if !repo.remote_available {
         ("offline", Color::Red)
     } else if !repo.remote_authorized {
-        ("unauthorized", Color::Yellow)
+        ("unauthorized (L to log in)", Color::Yellow)
     } else {
         ("connected", Color::Green)
     };
@@ -832,6 +832,7 @@ fn render_onboarding(frame: &mut Frame, area: Rect, app: &App) {
         Line::from(
             "Examples: repository create, repository clone, auth login, shared-store create",
         ),
+        Line::from("Press L to authenticate against an existing repository's server."),
         Line::from("Press : to run a shell command, or q to quit."),
     ];
     modal(

@@ -1,0 +1,4 @@
+{"tagName":"repositoryStatusRevision","data":{"repository":"01234567","branch":"abcdef","branchName":"main","revision":"11111111","revisionNumber":12,"revisionStaged":"22222222","revisionRemote":"11111111","isLocalAhead":false,"isRemoteAhead":false,"remoteAvailable":true,"remoteAuthorized":false}}
+{"tagName":"repositoryStatusFile","data":{"path":"src/main.rs","fromPath":"","size":1200,"action":"modify","type":"file","flagStaged":false,"flagDirty":true,"flagConflict":false,"flagConflictUnresolved":false}}
+{"tagName":"complete","data":{"status":0,"error":{}}}
+

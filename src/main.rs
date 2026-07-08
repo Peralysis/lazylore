@@ -1,6 +1,7 @@
 use std::{
     io::{self, stdout},
     path::PathBuf,
+    time::Duration,
 };
 
 use anyhow::{Context, Result};
@@ -45,30 +46,45 @@ struct Args {
     offline: bool,
 }
 
+/// Enters raw mode and the alternate screen. Paired with `leave_screen`; also
+/// used directly by `TerminalGuard` at startup/shutdown.
+fn enter_screen(mouse: bool) -> Result<()> {
+    enable_raw_mode().context("failed to enable terminal raw mode")?;
+    if mouse {
+        execute!(stdout(), EnterAlternateScreen, EnableMouseCapture)?;
+    } else {
+        execute!(stdout(), EnterAlternateScreen)?;
+    }
+    Ok(())
+}
+
+/// Leaves the alternate screen and disables raw mode, restoring the normal
+/// terminal. Used both at shutdown and to temporarily hand the real terminal
+/// to an interactive `lore` subcommand (e.g. `auth login`).
+fn leave_screen(mouse: bool) -> Result<()> {
+    disable_raw_mode().context("failed to disable terminal raw mode")?;
+    if mouse {
+        execute!(stdout(), DisableMouseCapture, LeaveAlternateScreen)?;
+    } else {
+        execute!(stdout(), LeaveAlternateScreen)?;
+    }
+    Ok(())
+}
+
 struct TerminalGuard {
     mouse: bool,
 }
 
 impl TerminalGuard {
     fn enter(mouse: bool) -> Result<Self> {
-        enable_raw_mode().context("failed to enable terminal raw mode")?;
-        if mouse {
-            execute!(stdout(), EnterAlternateScreen, EnableMouseCapture)?;
-        } else {
-            execute!(stdout(), EnterAlternateScreen)?;
-        }
+        enter_screen(mouse)?;
         Ok(Self { mouse })
     }
 }
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
-        let _ = disable_raw_mode();
-        if self.mouse {
-            let _ = execute!(stdout(), DisableMouseCapture, LeaveAlternateScreen);
-        } else {
-            let _ = execute!(stdout(), LeaveAlternateScreen);
-        }
+        let _ = leave_screen(self.mouse);
     }
 }
 
@@ -140,27 +156,48 @@ async fn show_loading_screen(
 async fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> Result<()> {
     let mut events = EventStream::new();
     let mut tick = tokio::time::interval(app.config.refresh_interval());
+    // Flushing on its own short interval (rather than only on the slower
+    // `tick` above) keeps the debounce in `flush_watcher` the only thing
+    // standing between a settled file edit and it showing up on screen.
+    let mut flush_tick = tokio::time::interval(Duration::from_millis(200));
     loop {
         terminal.draw(|frame| ui::render(frame, app))?;
         if app.should_quit {
             break;
         }
+        let (stream_rx, watch_rx) = app.receivers();
         tokio::select! {
             event = events.next() => {
                 if let Some(Ok(Event::Key(key))) = event
                     && key.kind == KeyEventKind::Press { app.on_key(key).await; }
             }
-            message = app.stream_receiver().recv() => {
+            message = stream_rx.recv() => {
                 if let Some(message) = message {
                     let finished = app.handle_stream(message);
                     if finished { app.refresh_all(false).await; }
                 }
             }
-            _ = tick.tick() => {
+            Some(path) = watch_rx.recv() => {
+                app.note_path_change(path);
                 app.drain_watcher();
+            }
+            _ = flush_tick.tick() => {
                 app.flush_watcher().await;
+            }
+            _ = tick.tick() => {
                 app.maybe_reconnect().await;
             }
+        }
+        if app.take_pending_login() {
+            // Hand the real terminal to `lore auth login` for an interactive
+            // (browser/device-code/password) flow, then restore the TUI.
+            leave_screen(app.config.ui.mouse)?;
+            app.run_interactive_login().await;
+            enter_screen(app.config.ui.mouse)?;
+            terminal.clear()?;
+        }
+        if app.take_pending_identity_reconcile() {
+            app.reconcile_identity().await;
         }
     }
     Ok(())

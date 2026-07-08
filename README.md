@@ -60,7 +60,7 @@ Outside a usable repository, LazyLore opens an onboarding screen. Press `Ctrl+P`
 |---|---|
 | Global | `Tab`/`Right` next pane, `Left`/`Shift+Tab` previous pane, `1–5`/`0` direct focus |
 | Global | `j/k` or `Up/Down` move within a pane, `q` quit |
-| Global | `p` sync, `P` push, `R` tracked-state refresh, `O` toggle offline mode, `?` help, `@` command log (`;`/`.` page, `Esc` back) |
+| Global | `p` sync, `P` push, `R` tracked-state refresh, `O` toggle offline mode, `L` authenticate, `?` help, `@` command log (`;`/`.` page, `Esc` back) |
 | Global | `Ctrl+P` Lore command browser, `:` shell command |
 | Files | `Space` stage/unstage, `a` stage all, `c` commit, `A` amend, `d` discard, `r` full scan, `e` edit, `o` open, `Enter` view diff |
 | Branches | `Space` switch, `n` create, `d` archive, `M` merge, `g` reset, `Enter` history, `[`/`]` Local/Remote tabs |
@@ -88,6 +88,16 @@ When the Lore server is unreachable, LazyLore automatically falls back to offlin
 - `O` toggles forced-offline mode at any time, suppressing those background probes.
 - `--offline` starts LazyLore already in forced-offline mode (equivalent to `general.offline = true` in `config.toml`).
 - Re-press `O` (or restart without `--offline`) to re-probe and go back online.
+
+## Authentication
+
+Some Lore servers require authentication; others don't. LazyLore tracks the reachable-but-unauthenticated state Lore itself reports and never assumes a server needs a login.
+
+- The header's remote-state line reads `unauthorized (L to log in)` when the server is reachable but the current session isn't authenticated.
+- `L` opens a masked prompt for an access token, which runs `lore auth login --token <token>` (the token is redacted from command history and the `@` log, same as any `--token` argument).
+- Leaving the prompt blank instead suspends the TUI and hands the terminal to `lore auth login` for its interactive flow (browser, device code, password), then resumes LazyLore afterward.
+- Sync, push, and lock operations are gated on this state: on an unauthorized server they refuse with a "press L to log in" message instead of failing opaquely against Lore.
+- Servers that don't require authentication report `remoteAuthorized: true` and are unaffected by any of the above — sync, push, and locks work exactly as before.
 
 ## Configuration
 
